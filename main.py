@@ -1,79 +1,49 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-import requests
-import time
+from fastapi.middleware.cors import CORSMiddleware
+from gradio_client import Client
+import tempfile
+import os
 
 app = FastAPI()
 
-HF = "https://rounakhii-serpentai.hf.space"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+client = Client("Rounakhii/SerpentAI")
+
+
+@app.get("/")
+def home():
+    return {"status": "SerpentAI Wrapper Running"}
 
 
 @app.post("/run/predict")
 async def predict(file: UploadFile = File(...)):
+    temp_path = None
+    try:
+        suffix = os.path.splitext(file.filename)[1]
 
-    # -------------------------
-    # STEP 1 Upload file
-    # -------------------------
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(await file.read())
+            temp_path = tmp.name
 
-    upload = requests.post(
-        f"{HF}/gradio_api/upload",
-        files={
-            "files": (
-                file.filename,
-                await file.read(),
-                file.content_type
-            )
-        },
-        timeout=60
-    )
-
-    upload.raise_for_status()
-
-    uploaded_path = upload.json()[0]
-
-    # -------------------------
-    # STEP 2 Start prediction
-    # -------------------------
-
-    body = {
-        "data": [
-            {
-                "path": uploaded_path,
-                "meta": {
-                    "_type": "gradio.FileData"
-                }
-            }
-        ]
-    }
-
-    r = requests.post(
-        f"{HF}/gradio_api/call/v2/classify",
-        json=body,
-        timeout=60
-    )
-
-    r.raise_for_status()
-
-    event_id = r.json()["event_id"]
-
-    # -------------------------
-    # STEP 3 Wait
-    # -------------------------
-
-    while True:
-
-        sse = requests.get(
-            f"{HF}/gradio_api/call/classify/{event_id}",
-            timeout=60
+        result = client.predict(
+            image=temp_path,
+            api_name="/classify"
         )
 
-        text = sse.text
+        return {
+            "data": result
+        }
 
-        if "event: complete" in text:
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            data = text.split("data:")[-1].strip()
-
-            return {
-                "data": data
-            }
-
-        time.sleep(1)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
